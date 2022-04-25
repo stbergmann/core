@@ -23,6 +23,7 @@ void test1(const css::uno::Reference<css::io::XStreamListener>& a)
 {
     // expected-error@+1 {{the source reference is already a subtype of the destination reference, just use = [loplugin:referencecasting]}}
     css::uno::Reference<css::lang::XEventListener> b(a, css::uno::UNO_QUERY);
+    (void)b;
     // expected-error@+1 {{the source reference is already a subtype of the destination reference, just use = [loplugin:referencecasting]}}
     auto c = css::uno::Reference<css::lang::XEventListener>::query(a);
 }
@@ -35,6 +36,7 @@ void test()
 {
     // expected-error@+1 {{the source reference is already a subtype of the destination reference, just use = [loplugin:referencecasting]}}
     css::uno::Reference<css::lang::XEventListener> b(getListener(), css::uno::UNO_QUERY);
+    (void)b;
 }
 }
 
@@ -167,6 +169,7 @@ void test(css::io::XStreamListener* l)
 void test12(const css::uno::Reference<css::io::XStreamListener>& a)
 {
     css::uno::Reference<css::uno::XInterface> b(a, css::uno::UNO_QUERY);
+    (void)b;
 }
 
 // no warning expected: querying for XInterface (instead of doing an upcast) has special semantics,
@@ -186,6 +189,7 @@ void test14(css::uno::Sequence<css::uno::Reference<css::io::XStreamListener>> se
     {
         // expected-error@+1 {{the source reference is already a subtype of the destination reference, just use = [loplugin:referencecasting]}}
         css::uno::Reference<css::io::XStreamListener> xDataSeries(seq[i], css::uno::UNO_QUERY);
+        (void)xDataSeries;
     }
 }
 

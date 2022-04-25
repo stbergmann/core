@@ -19,6 +19,7 @@
 #pragma once
 
 #include <config_options.h>
+#include <sal/types.h>
 #include <tools/toolsdllapi.h>
 #include <tools/lineend.hxx>
 #include <tools/long.hxx>
@@ -110,6 +111,7 @@ protected:
 
 public:
 
+    SAL_WARN_UNUSED_CONSTRUCTOR
     SvLockBytes() : m_bSync(false) {}
 
     virtual ~SvLockBytes() override;
@@ -190,7 +192,7 @@ protected:
     SAL_DLLPRIVATE void EncryptBuffer( void* pStart, std::size_t nLen ) const;
 
 public:
-                    SvStream();
+    SAL_WARN_UNUSED_CONSTRUCTOR SvStream();
                     SvStream( SvLockBytes *pLockBytes);
     virtual         ~SvStream();
 
@@ -598,7 +600,7 @@ public:
      * @param eStreamEncoding if not specified, defaults to osl_getThreadTextEncoding()
     */
     SvFileStream( const OUString& rFileName, StreamMode eOpenMode, std::optional<rtl_TextEncoding> oStreamEncoding = {} );
-    SvFileStream();
+    SAL_WARN_UNUSED_CONSTRUCTOR SvFileStream();
     virtual ~SvFileStream() override;
 
     virtual void    ResetError() override;

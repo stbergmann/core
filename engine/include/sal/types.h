@@ -27,6 +27,10 @@
 #include "sal/macros.h"
 #include "sal/typesizes.h"
 
+#if defined LIBO_INTERNAL_ONLY
+#include "config_global.h"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -591,6 +595,19 @@ template< typename T1, typename T2 > inline T1 static_int_cast(T2 n) {
 #define SAL_WARN_UNUSED __attribute__((warn_unused))
 #else
 #define SAL_WARN_UNUSED
+#endif
+
+/** Annotate constructors where a compiler should warn if an instance is unused.
+
+    For classes that cannot use SAL_WARN_UNUSED because only instances created via certain
+    constructors should be warned about (e.g., the default constructor of a smart pointer class).
+
+    @since LibreOffice 7.6
+*/
+#if defined LIBO_INTERNAL_ONLY && HAVE_WARN_UNUSED_CONSTRUCTOR
+#define SAL_WARN_UNUSED_CONSTRUCTOR __attribute__((warn_unused))
+#else
+#define SAL_WARN_UNUSED_CONSTRUCTOR
 #endif
 
 /// @cond INTERNAL

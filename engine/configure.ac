@@ -4561,6 +4561,7 @@ test_cl_exe()
     AC_MSG_RESULT([$CL_EXE_PATH])
 }
 
+cflags_werror=-Werror
 SOLARINC=
 MSBUILD_PATH=
 DEVENV=
@@ -4575,6 +4576,8 @@ if test "$_os" = "WINNT"; then
         fi
     fi
     AC_MSG_RESULT([])
+
+    cflags_werror=-WX
 
     VC_PRODUCT_DIR="$vctest/VC"
     COMPATH="$VC_PRODUCT_DIR/Tools/MSVC/$vcbuildnumber"
@@ -8250,6 +8253,20 @@ AC_COMPILE_IFELSE([AC_LANG_SOURCE([
         constinit S<int> s{3, 2, 1};
     ])], [
         AC_DEFINE([HAVE_CPP_CONSTINIT_SORTED_VECTOR],[1])
+        AC_MSG_RESULT([yes])
+    ], [AC_MSG_RESULT([no])])
+CXXFLAGS=$save_CXXFLAGS
+AC_LANG_POP([C++])
+
+AC_MSG_CHECKING(
+    [whether $CXX_BASE supports __attribute__((warn_unused)) for individual constructors])
+AC_LANG_PUSH([C++])
+save_CXXFLAGS=$CXXFLAGS
+CXXFLAGS="$CXXFLAGS $cflags_werror"
+AC_COMPILE_IFELSE([AC_LANG_SOURCE([
+        struct S { __attribute__((warn_unused)) S(); };
+    ])], [
+        AC_DEFINE([HAVE_WARN_UNUSED_CONSTRUCTOR],[1])
         AC_MSG_RESULT([yes])
     ], [AC_MSG_RESULT([no])])
 CXXFLAGS=$save_CXXFLAGS

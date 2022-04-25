@@ -18,6 +18,7 @@
  */
 #pragma once
 
+#include <sal/types.h>
 #include <vcl/dllapi.h>
 #include <vcl/bitmap.hxx>
 #include <vcl/Scanline.hxx>
@@ -181,7 +182,7 @@ public:
         : moAccess(rBitmap)
     {
     }
-    BitmapScopedReadAccess() {}
+    SAL_WARN_UNUSED_CONSTRUCTOR BitmapScopedReadAccess() {}
 
     BitmapScopedReadAccess& operator=(const Bitmap& rBitmap)
     {

@@ -28,6 +28,9 @@ Any change in this header will cause a rebuild of almost everything.
 // Compiler supports C++20 <compare> std::strong_order:
 #define HAVE_CPP_STRONG_ORDER 0
 
+// Clang/GCC __attribute__((warn_unused)) for individual constructors:
+#define HAVE_WARN_UNUSED_CONSTRUCTOR 0
+
 /* "CWG motion 23: P1825R0 'Merged wording for P0527R1 and P1155R3' (DR)" in
    <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2019/n4829.html> "N4829 Editors' Report --
    Programming Languages -- C++" marks

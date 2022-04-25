@@ -30,6 +30,7 @@
 #endif
 
 #include "rtl/alloc.h"
+#include "sal/types.h"
 
 namespace com
 {
@@ -246,7 +247,7 @@ public:
 
     /** Default Constructor: Sets null reference.
     */
-    inline Reference();
+    inline SAL_WARN_UNUSED_CONSTRUCTOR Reference();
 
     /** Copy constructor: Copies interface reference.
 
@@ -305,7 +306,8 @@ public:
         @param rRef another reference
         @param dummy UNO_QUERY to force obvious distinction to other constructors
     */
-    inline Reference( const BaseReference & rRef, UnoReference_Query dummy );
+    inline SAL_WARN_UNUSED_CONSTRUCTOR Reference(
+        const BaseReference & rRef, UnoReference_Query dummy );
     /** Constructor: Queries given interface for reference interface type (interface_type).
 
         @param pInterface an interface pointer
@@ -317,7 +319,7 @@ public:
         @param rAny an any
         @param dummy UNO_QUERY to force obvious distinction to other constructors
     */
-    inline Reference( const Any & rAny, UnoReference_Query dummy);
+    inline SAL_WARN_UNUSED_CONSTRUCTOR Reference( const Any & rAny, UnoReference_Query dummy);
     /** Constructor: Queries given interface for reference interface type (interface_type).
         Throws a RuntimeException if the demanded interface cannot be queried.
 

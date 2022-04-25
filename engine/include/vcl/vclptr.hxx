@@ -24,6 +24,7 @@
 
 #include <config_global.h>
 #include <rtl/ref.hxx>
+#include <sal/types.h>
 
 #include <utility>
 #include <type_traits>
@@ -89,7 +90,7 @@ protected:
 public:
     /** Constructor...
      */
-    VclPtr() = default;
+    SAL_WARN_UNUSED_CONSTRUCTOR VclPtr() = default;
 
     /** Constructor...
      */

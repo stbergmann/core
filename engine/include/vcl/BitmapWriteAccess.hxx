@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include <sal/types.h>
 #include <vcl/alpha.hxx>
 #include <vcl/bitmap.hxx>
 #include <vcl/BitmapReadAccess.hxx>
@@ -94,7 +95,7 @@ public:
         : moAccess(rBitmap)
     {
     }
-    BitmapScopedWriteAccess() {}
+    SAL_WARN_UNUSED_CONSTRUCTOR BitmapScopedWriteAccess() {}
 
     BitmapScopedWriteAccess& operator=(Bitmap& rBitmap)
     {

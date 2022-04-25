@@ -26,6 +26,7 @@
 
 #include "rtl/ustring.hxx"
 #include "osl/module.h"
+#include "sal/types.h"
 
 namespace osl
 {
@@ -57,7 +58,7 @@ public:
         return osl_getModuleURLFromFunctionAddress( addr, &libraryUrl.pData );
     }
 
-    Module(): m_Module(NULL){}
+    SAL_WARN_UNUSED_CONSTRUCTOR Module(): m_Module(NULL){}
 
 #ifndef DISABLE_DYNLOADING
 

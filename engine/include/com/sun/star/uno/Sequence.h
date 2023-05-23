@@ -54,7 +54,7 @@ namespace uno
     @tparam E element type of sequence
 */
 template< class E >
-class SAL_WARN_UNUSED SAL_DLLPUBLIC_RTTI Sequence
+class SAL_DLLPUBLIC_RTTI Sequence
 {
     /** sequence handle
     */
@@ -86,7 +86,7 @@ public:
 
     /** Default constructor: Creates an empty sequence.
     */
-    inline Sequence();
+    inline SAL_WARN_UNUSED_CONSTRUCTOR Sequence();
 
     /** Copy constructor: Creates a copy of given sequence.
 
@@ -113,7 +113,7 @@ public:
 
         @param len initial sequence length
     */
-    inline explicit Sequence( sal_Int32 len );
+    inline explicit SAL_WARN_UNUSED_CONSTRUCTOR Sequence( sal_Int32 len );
 
 #if defined LIBO_INTERNAL_ONLY
     /** Create a sequence with the given elements.

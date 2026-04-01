@@ -156,6 +156,9 @@ wsd_sources = \
 	../wsd/CacheUtil.cpp \
 	../wsd/ClientRequestDispatcher.cpp \
 	../wsd/ClientSession.cpp \
+	../wsd/CollabBroker.cpp \
+	../wsd/CollabFileProxy.cpp \
+	../wsd/CollabSocketHandler.cpp \
 	../wsd/ContentType.cpp \
 	../wsd/DocumentBroker.cpp \
 	../wsd/FileServer.cpp \

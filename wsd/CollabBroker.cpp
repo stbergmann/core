@@ -18,6 +18,7 @@
 #include <JsonUtil.hpp>
 #include <Log.hpp>
 #include <SigUtil.hpp>
+#include <Uri.hpp>
 #include <Util.hpp>
 
 #include <algorithm>
@@ -165,8 +166,43 @@ void CollabBroker::broadcastExcluding(const std::string& message,
     }
 }
 
+namespace
+{
+/// Serialize a handler's user info as a JSON object (fields: id,
+/// name, avatar if present, and optionally canWrite).
+///
+/// The avatar URL is rewritten to a server-hosted proxy
+/// (/co/collab/avatar?...) which returns the cached image bytes.
+/// This avoids two problems with forwarding the raw WOPI avatar
+/// URL: cross-origin fetches from cool.html don't carry the
+/// integrator's session cookies, and CSP may block them.
+void appendUserJson(std::ostringstream& oss,
+                    const std::string& wopiSrc,
+                    const std::string& brokerTag,
+                    const std::shared_ptr<CollabSocketHandler>& h,
+                    bool withCanWrite)
+{
+    oss << "{\"id\":\"" << JsonUtil::escapeJSONValue(h->getUserId()) << "\""
+        << ",\"name\":\"" << JsonUtil::escapeJSONValue(h->getUsername()) << "\"";
+    if (!h->getAvatar().empty())
+    {
+        std::string proxy = "/co/collab/avatar?WOPISrc="
+            + Uri::encode(wopiSrc)
+            + "&userId=" + Uri::encode(h->getUserId())
+            + "&token=" + brokerTag;
+        oss << ",\"avatar\":\""
+            << JsonUtil::escapeJSONValue(proxy) << "\"";
+    }
+    if (withCanWrite)
+        oss << ",\"canWrite\":"
+            << (h->getUserCanWrite() ? "true" : "false");
+    oss << '}';
+}
+} // namespace
+
 std::string CollabBroker::getUserListJson(const std::shared_ptr<CollabSocketHandler>& exclude) const
 {
+    const std::string tag = _accessToken.getCurrent();
     std::lock_guard<std::mutex> lock(_mutex);
 
     std::ostringstream oss;
@@ -181,11 +217,7 @@ std::string CollabBroker::getUserListJson(const std::shared_ptr<CollabSocketHand
             if (!first)
                 oss << ',';
             first = false;
-
-            oss << "{\"id\":\"" << JsonUtil::escapeJSONValue(handler->getUserId()) << "\""
-                << ",\"name\":\"" << JsonUtil::escapeJSONValue(handler->getUsername()) << "\""
-                << ",\"canWrite\":" << (handler->getUserCanWrite() ? "true" : "false")
-                << '}';
+            appendUserJson(oss, _wopiSrc, tag, handler, true);
         }
     }
 
@@ -197,11 +229,9 @@ std::string CollabBroker::getUserListJson(const std::shared_ptr<CollabSocketHand
 void CollabBroker::notifyUserJoined(const std::shared_ptr<CollabSocketHandler>& handler)
 {
     std::ostringstream oss;
-    oss << "{\"type\":\"user_joined\",\"user\":{"
-        << "\"id\":\"" << JsonUtil::escapeJSONValue(handler->getUserId()) << "\""
-        << ",\"name\":\"" << JsonUtil::escapeJSONValue(handler->getUsername()) << "\""
-        << ",\"canWrite\":" << (handler->getUserCanWrite() ? "true" : "false")
-        << "}}";
+    oss << "{\"type\":\"user_joined\",\"user\":";
+    appendUserJson(oss, _wopiSrc, _accessToken.getCurrent(), handler, true);
+    oss << "}";
     const std::string message = oss.str();
 
     LOG_INF("CollabBroker [" << _docKey << "]: notifying user joined: "
@@ -222,10 +252,9 @@ void CollabBroker::notifyUserJoined(const std::shared_ptr<CollabSocketHandler>& 
 void CollabBroker::notifyUserLeft(const std::shared_ptr<CollabSocketHandler>& handler)
 {
     std::ostringstream oss;
-    oss << "{\"type\":\"user_left\",\"user\":{"
-        << "\"id\":\"" << JsonUtil::escapeJSONValue(handler->getUserId()) << "\""
-        << ",\"name\":\"" << JsonUtil::escapeJSONValue(handler->getUsername()) << "\""
-        << "}}";
+    oss << "{\"type\":\"user_left\",\"user\":";
+    appendUserJson(oss, _wopiSrc, _accessToken.getCurrent(), handler, false);
+    oss << "}";
     const std::string message = oss.str();
 
     LOG_INF("CollabBroker [" << _docKey << "]: notifying user left: "
@@ -246,10 +275,9 @@ void CollabBroker::notifyUserLeft(const std::shared_ptr<CollabSocketHandler>& ha
 void CollabBroker::notifyEditingStarted(const std::shared_ptr<CollabSocketHandler>& handler)
 {
     std::ostringstream oss;
-    oss << "{\"type\":\"editing_started\",\"user\":{"
-        << "\"id\":\"" << JsonUtil::escapeJSONValue(handler->getUserId()) << "\""
-        << ",\"name\":\"" << JsonUtil::escapeJSONValue(handler->getUsername()) << "\""
-        << "}}";
+    oss << "{\"type\":\"editing_started\",\"user\":";
+    appendUserJson(oss, _wopiSrc, _accessToken.getCurrent(), handler, false);
+    oss << "}";
     const std::string message = oss.str();
 
     LOG_INF("CollabBroker [" << _docKey << "]: notifying editing started by: "
@@ -314,6 +342,24 @@ bool CollabBroker::matchesAccessToken(const std::string& tag) const
             << tag << "], expected [" << _accessToken.getCurrent() << "] or ["
             << _accessToken.getPrevious() << ']');
     return false;
+}
+
+void CollabBroker::registerAvatar(const std::string& userId,
+                                  const std::string& url,
+                                  const std::string& accessToken)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    _avatars[userId] = UserAvatar{url, accessToken};
+}
+
+CollabBroker::UserAvatar
+CollabBroker::lookupAvatar(const std::string& userId) const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    auto it = _avatars.find(userId);
+    if (it == _avatars.end())
+        return {};
+    return it->second;
 }
 
 std::shared_ptr<CollabBroker> findOrCreateCollabBroker(const std::string& docKey,
@@ -406,6 +452,19 @@ std::shared_ptr<CollabBroker> findCollabBroker(const std::string& docKey)
     if (it != CollabBrokers.end() && it->second && !it->second->isEmpty())
     {
         return it->second;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<CollabBroker>
+findCollabBrokerByWopiSrc(const std::string& wopiSrc)
+{
+    std::lock_guard<std::mutex> lock(CollabBrokersMutex);
+    for (const auto& [docKey, broker] : CollabBrokers)
+    {
+        if (broker && !broker->isEmpty()
+            && broker->getWopiSrc() == wopiSrc)
+            return broker;
     }
     return nullptr;
 }

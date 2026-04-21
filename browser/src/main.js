@@ -143,7 +143,7 @@ if (window.ThisIsTheEmscriptenApp) {
 		globalThis.collabSaveToServer = function(fileBytes) {
 			window.app.console.log('WASM: collabSaveToServer called with ' + fileBytes.length + ' bytes');
 			map.fire('showbusy', {label: _('Saving...')});
-			global.collabUploadFile(fullDocUrl, accessToken, fileBytes).then(function() {
+			global.collabUploadFile(fileBytes).then(function() {
 				window.app.console.log('WASM: save completed successfully');
 				map.fire('hidebusy');
 				if (window._switchToServerAfterSave) {

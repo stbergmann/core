@@ -15,6 +15,13 @@
 
 #include <common/Log.hpp>
 
+#include <QEventLoop>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QTimer>
 #include <QUrlQuery>
 #include <QVBoxLayout>
 #include <QWebEnginePage>
@@ -75,6 +82,47 @@ protected:
 
 // --- IntegratorFilePicker (generic) ---
 
+namespace
+{
+/// Probe serverUrl and, when the integrator is recognized, return a
+/// URL that drops the user straight onto the files view instead of
+/// the default landing page.  Returns serverUrl unchanged otherwise.
+QString resolveLandingUrl(const QString& serverUrl)
+{
+    QUrl base(serverUrl);
+    QUrl probe = base;
+    QString probePath = base.path();
+    if (!probePath.endsWith('/'))
+        probePath += '/';
+    probe.setPath(probePath + "status.php");
+
+    QNetworkAccessManager nam;
+    QEventLoop loop;
+    QNetworkRequest req(probe);
+    QNetworkReply* reply = nam.get(req);
+    QObject::connect(reply, &QNetworkReply::finished,
+                     &loop, &QEventLoop::quit);
+    QTimer::singleShot(3000, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    QString result = serverUrl;
+    if (reply->isFinished() && reply->error() == QNetworkReply::NoError)
+    {
+        QJsonDocument jdoc = QJsonDocument::fromJson(reply->readAll());
+        if (jdoc.object()["productname"].toString() == "Nextcloud")
+        {
+            QUrl u = base;
+            u.setPath(probePath + "apps/files/files");
+            result = u.toString();
+            LOG_TRC("IntegratorFilePicker: detected Nextcloud, "
+                    "landing on " << result.toStdString());
+        }
+    }
+    reply->deleteLater();
+    return result;
+}
+}
+
 IntegratorFilePicker::IntegratorFilePicker(const QString& serverUrl,
                                            QWidget* parent)
     : QDialog(parent)
@@ -92,7 +140,7 @@ IntegratorFilePicker::IntegratorFilePicker(const QString& serverUrl,
     layout->addWidget(_webView);
     layout->setContentsMargins(0, 0, 0, 0);
 
-    _webView->load(QUrl(serverUrl));
+    _webView->load(QUrl(resolveLandingUrl(serverUrl)));
 }
 
 void IntegratorFilePicker::extractAccessToken()

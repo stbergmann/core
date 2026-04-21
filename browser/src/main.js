@@ -190,7 +190,9 @@ if (window.ThisIsTheEmscriptenApp) {
 			// Listen for collab notifications from other users
 			global.addCollabNotificationListener(function(msg) {
 				if (msg.type === 'editing_started' && msg.user) {
-					map._onOtherUserEditingStarted(msg.user.name || msg.user.id);
+					map._onOtherUserEditingStarted(
+						msg.user.name || msg.user.id,
+						msg.user.avatar);
 				} else if (msg.type === 'switch_to_collab') {
 					// Another user wants collaborative editing.
 					// Save local changes and switch to server mode.

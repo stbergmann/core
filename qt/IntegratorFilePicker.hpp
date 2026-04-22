@@ -11,31 +11,17 @@
 
 #pragma once
 
+#include <qt/Document.hpp>
+
 #include <QDialog>
 #include <QString>
 #include <QUrl>
-#include <QVariant>
+#include <QUrlQuery>
 
+#include <functional>
+
+class Bridge;
 class QWebEngineView;
-
-/// Minimal stand-in for qt::Bridge used by the CODA_EMBED_IFRAME POC,
-/// just so cool.html's JS can resolve bridge.cool / bridge.debug /
-/// bridge.error on the QWebChannel.  All calls are logged and
-/// dropped; no document lifecycle is wired up.  Stage 2 proper would
-/// attach the real Bridge (with its Document, FakeSocket, message
-/// pump etc.) to the picker page.
-class EmbedPlaceholderBridge : public QObject
-{
-    Q_OBJECT
-
-public:
-    using QObject::QObject;
-
-public slots:
-    void debug(const QString& msg);
-    void error(const QString& msg);
-    QVariant cool(const QString& msg);
-};
 
 /// Shows an integrator's web UI in a QWebEngineView.  When the user
 /// opens a document, the integrator creates an iframe pointing to the
@@ -63,6 +49,21 @@ public:
 
 private:
     void extractAccessToken();
+    /// Run integrator-specific JS to locate the WOPI access_token in
+    /// the current page DOM.  `then` is called with the extracted
+    /// value (empty string on failure).
+    void extractAccessTokenAsync(
+        std::function<void(const QString&)> then);
+    /// Embed-mode download-and-attach: fetches the document via
+    /// /co/collab, populates _document, attaches a Bridge to the
+    /// picker page, and navigates the picker to the local-server
+    /// cool.html.  origQuery carries through the UI hints NC set on
+    /// the intercepted iframe URL (lang, closebutton, ...).
+    void attachEmbeddedDocument(const QString& wopiSrc,
+                                const QString& accessToken,
+                                const QString& coolServer,
+                                const QString& coolPath,
+                                QUrlQuery origQuery);
 
     QWebEngineView* _webView;
     QString _wopiSrc;
@@ -71,6 +72,10 @@ private:
     QString _coolPath;
     /// Port of the embed-mode HTTP server (0 when embed mode is off).
     quint16 _embedPort = 0;
+    /// Embed-mode: populated document + Bridge, owned by the picker
+    /// for the lifetime of the dialog.
+    coda::DocumentData _document;
+    Bridge* _bridge = nullptr;
 };
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

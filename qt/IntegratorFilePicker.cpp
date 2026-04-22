@@ -15,7 +15,11 @@
 
 #include <common/Log.hpp>
 #include <common/MobileApp.hpp>
+#include <net/FakeSocket.hpp>
+#include <qt/bridge.hpp>
 #include <qt/qt.hpp>
+#include <qt/RemoteOpen.hpp>
+#include <qt/WebView.hpp>
 
 #include <QDir>
 #include <QEventLoop>
@@ -23,6 +27,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMetaObject>
 #include <QMimeDatabase>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -32,7 +37,6 @@
 #include <QTimer>
 #include <QUrlQuery>
 #include <QVBoxLayout>
-#include <QWebChannel>
 #include <QWebEnginePage>
 #include <QWebEngineUrlRequestInfo>
 #include <QWebEngineUrlRequestInterceptor>
@@ -52,37 +56,55 @@ protected:
         const QUrl& url, NavigationType type, bool isMainFrame) override
     {
         QUrlQuery q(url);
-        if (q.hasQueryItem("WOPISrc"))
+        // Once a Bridge has been attached, the picker's webview is
+        // the document editor; subsequent WOPISrc navigations (e.g.
+        // the one switchToServerMode triggers when the local editor
+        // hands off to server-mode collab) must pass through, not
+        // get reinterpreted as a fresh document open.
+        if (q.hasQueryItem("WOPISrc") && picker->_bridge == nullptr)
         {
             if (picker->_embedPort != 0)
             {
                 // URL is already pointing at our local HTTP server
-                // (second acceptNavigationRequest after our redirect):
+                // (second acceptNavigationRequest after our defer):
                 // let it proceed so cool.html loads in the picker.
                 if (url.host() == "localhost"
                     && url.port() == picker->_embedPort)
                     return true;
 
-                // NC navigates to coolwsd's /browser/HASH/<maybe wasm/>
-                // cool.html.  Redirect to http://localhost:<our port>/
-                // cool.html so the page is served from the CODA origin
-                // (whitelisted by the NC CSP hack).  The /wasm/ segment
-                // cfffbcde75fa adds to NC's iframe URL for COWASM
-                // experiments is dropped here: we use plain cool.html
-                // (Stage 2 will make that cool.html actually render
-                // against CODA's bridge).
-                QUrl rewritten;
-                rewritten.setScheme("http");
-                rewritten.setHost("localhost");
-                rewritten.setPort(picker->_embedPort);
-                rewritten.setPath("/cool.html");
-                rewritten.setQuery(url.query());
-                LOG_TRC("IntegratorFilePicker: rewriting nav "
-                        << url.toString().toStdString() << " -> "
-                        << rewritten.toString().toStdString());
-                QMetaObject::invokeMethod(this, [this, rewritten]() {
-                    this->setUrl(rewritten);
-                }, Qt::QueuedConnection);
+                // Extract WOPI params.  If the iframe URL did not
+                // carry the access_token (e.g. NC richdocuments
+                // leaves it in a POST form), fall back to the same
+                // integrator-specific DOM scrape used by the non-
+                // embed flow.  Defer the actual download + Bridge
+                // attach: we must not run a nested event loop
+                // inside acceptNavigationRequest.
+                IntegratorFilePicker* p = picker;
+                QString wopiSrc = q.queryItemValue(
+                    "WOPISrc", QUrl::FullyDecoded);
+                QString accessToken = q.queryItemValue(
+                    "access_token", QUrl::FullyDecoded);
+                QString coolServer = url.scheme() + "://" + url.host()
+                    + (url.port(-1) != -1
+                        ? ":" + QString::number(url.port())
+                        : QString());
+                QString coolPath = url.path();
+                QUrlQuery origQuery(url);
+                auto proceed =
+                    [p, wopiSrc, coolServer, coolPath, origQuery]
+                    (const QString& token) {
+                        QMetaObject::invokeMethod(p,
+                            [p, wopiSrc, token, coolServer, coolPath,
+                             origQuery]() {
+                                p->attachEmbeddedDocument(
+                                    wopiSrc, token, coolServer,
+                                    coolPath, origQuery);
+                            }, Qt::QueuedConnection);
+                    };
+                if (accessToken.isEmpty())
+                    picker->extractAccessTokenAsync(std::move(proceed));
+                else
+                    proceed(accessToken);
                 return false;
             }
 
@@ -342,44 +364,84 @@ IntegratorFilePicker::IntegratorFilePicker(const QString& serverUrl,
             LOG_WRN("IntegratorFilePicker: embed mode requested but "
                     "HTTP server failed to listen");
         }
-
-        // Attach a QWebChannel to the picker page so the Qt-flavored
-        // cool.html's <script src="qrc:///qtwebchannel/qwebchannel.js">
-        // can resolve qt.webChannelTransport, and register a
-        // placeholder Bridge so channel.objects.bridge.cool / debug /
-        // error are defined.  Stage-2-proper would attach the real
-        // Bridge (with Document, FakeSocket, message pump).
-        auto* channel = new QWebChannel(page);
-        channel->registerObject("bridge",
-            new EmbedPlaceholderBridge(page));
-        page->setWebChannel(channel);
+        // The QWebChannel + real Bridge are installed in
+        // attachEmbeddedDocument(), once we have a DocumentData.
     }
 
     _webView->load(QUrl(resolveLandingUrl(serverUrl)));
 }
 
-void EmbedPlaceholderBridge::debug(const QString& msg)
+void IntegratorFilePicker::attachEmbeddedDocument(
+    const QString& wopiSrc, const QString& accessToken,
+    const QString& coolServer, const QString& coolPath,
+    QUrlQuery origQuery)
 {
-    LOG_TRC("EmbedPlaceholderBridge::debug: " << msg.toStdString());
+    LOG_TRC("IntegratorFilePicker::attachEmbeddedDocument: "
+            << "wopiSrc=" << wopiSrc.toStdString()
+            << " coolServer=" << coolServer.toStdString());
+
+    coda::RemoteDownload dl = coda::downloadRemoteDocument(
+        wopiSrc, accessToken, coolServer, coolPath);
+    if (dl.localPath.isEmpty())
+    {
+        LOG_WRN("IntegratorFilePicker: document download failed");
+        return;
+    }
+
+    _document = {
+        ._fileURL = Poco::URI(
+            Poco::Path(dl.localPath.toStdString())),
+        ._fakeClientFd = fakeSocketSocket(),
+        ._appDocId = coda::generateNewAppDocId(),
+        ._remoteInfo = std::move(dl.remoteInfo),
+    };
+
+    _bridge = coda::attachRemoteBridge(
+        _webView->page(), _document, this, _webView);
+    coda::wireCollabMessagesToBridge(
+        _bridge, _document._remoteInfo.get());
+
+    // Build the URL we rewrite the iframe to: our local HTTP server's
+    // /cool.html with CODA-local params added.  Preserve the UI
+    // hints (lang, closebutton, revisionhistory) from the original
+    // NC iframe URL, but drop WOPISrc and access_token: their
+    // presence on the URL is what makes main.js set isWopi=true and
+    // the JS render the integrator-iframe minimal chrome (no top
+    // menu bar, smaller toolbar) instead of the local-edit chrome
+    // we want here.  Both values are kept separately on
+    // _document._remoteInfo for switchToServerMode to rebuild the
+    // server-mode URL later.
+    QUrlQuery embedQuery(origQuery);
+    embedQuery.removeAllQueryItems("WOPISrc");
+    embedQuery.removeAllQueryItems("access_token");
+    QUrl target;
+    target.setScheme("http");
+    target.setHost("localhost");
+    target.setPort(_embedPort);
+    target.setPath("/cool.html");
+    target.setQuery(embedQuery);
+    coda::addRemoteCoolParams(target, _document);
+
+    LOG_TRC("IntegratorFilePicker: navigating picker to "
+            << target.toString().toStdString());
+    _webView->setUrl(target);
+
+    // Repurpose the picker dialog as the document viewer: set the
+    // window title to <filename> - APP_NAME and resize to match the
+    // non-embed document window.
+    Poco::Path uriPath(_document._fileURL.getPath());
+    QString fileName = QString::fromStdString(uriPath.getFileName());
+    setWindowTitle(fileName + " - " APP_NAME);
+    auto size = coda::documentWindowSize(false);
+    resize(size.first, size.second);
 }
 
-void EmbedPlaceholderBridge::error(const QString& msg)
+void IntegratorFilePicker::extractAccessTokenAsync(
+    std::function<void(const QString&)> then)
 {
-    LOG_WRN("EmbedPlaceholderBridge::error: " << msg.toStdString());
-}
-
-QVariant EmbedPlaceholderBridge::cool(const QString& msg)
-{
-    LOG_TRC("EmbedPlaceholderBridge::cool: " << msg.toStdString());
-    return {};
-}
-
-void IntegratorFilePicker::extractAccessToken()
-{
-    // The access_token wasn't in the iframe URL.  Try known
-    // integrator-specific extraction strategies.  Each returns a
-    // non-empty string on success or empty string on failure.
-    // The JS tries them all and returns the first hit.
+    // Try known integrator-specific extraction strategies.  Each
+    // returns a non-empty string on success or empty string on
+    // failure.  The JS tries them all and returns the first hit.
     _webView->page()->runJavaScript(
         "(() => {"
         "  var token = '';"
@@ -398,12 +460,18 @@ void IntegratorFilePicker::extractAccessToken()
         // Add more integrator strategies here as needed.
         "  return '';"
         "})()",
-        [this](const QVariant& result) {
-            QString val = result.toString();
-            if (!val.isEmpty())
-                _accessToken = val;
-            accept();
+        [then = std::move(then)](const QVariant& result) {
+            then(result.toString());
         });
+}
+
+void IntegratorFilePicker::extractAccessToken()
+{
+    extractAccessTokenAsync([this](const QString& val) {
+        if (!val.isEmpty())
+            _accessToken = val;
+        accept();
+    });
 }
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

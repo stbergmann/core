@@ -402,7 +402,7 @@ QVariant Bridge::cool(const QString& messageStr)
         if (FileUtil::getStatOfFile(welcomePath, st) == 0)
         {
             Poco::URI fileURL{Poco::Path(welcomePath)};
-            QMainWindow* window = _window;
+            QMainWindow* window = qobject_cast<QMainWindow*>(_window);
             QTimer::singleShot(0, [fileURL, window]() {
                 WebView* webViewInstance = new WebView(Application::getProfile(), /*isWelcome*/ true, window);
                 webViewInstance->load(fileURL);
@@ -608,12 +608,12 @@ QVariant Bridge::cool(const QString& messageStr)
     }
     else if (tokens.equals(0, "FULLSCREENPRESENTATION"))
     {
-        if (_webView)
+        if (auto* coda = dynamic_cast<CODAWebEngineView*>(_webView))
         {
             if (tokens.equals(1, "true"))
-                _webView->createPresentationFS();
+                coda->createPresentationFS();
             else
-                _webView->destroyPresentationFS();
+                coda->destroyPresentationFS();
         }
     }
     else if (message == "openremote")
@@ -732,8 +732,8 @@ QVariant Bridge::cool(const QString& messageStr)
     }
     else if (tokens.equals(0, "EXCHANGEMONITORS"))
     {
-        if (_webView)
-            _webView->exchangeMonitors();
+        if (auto* coda = dynamic_cast<CODAWebEngineView*>(_webView))
+            coda->exchangeMonitors();
     }
     else if (tokens.equals(0, "downloadas"))
     {

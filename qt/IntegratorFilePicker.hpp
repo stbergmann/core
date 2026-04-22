@@ -14,8 +14,28 @@
 #include <QDialog>
 #include <QString>
 #include <QUrl>
+#include <QVariant>
 
 class QWebEngineView;
+
+/// Minimal stand-in for qt::Bridge used by the CODA_EMBED_IFRAME POC,
+/// just so cool.html's JS can resolve bridge.cool / bridge.debug /
+/// bridge.error on the QWebChannel.  All calls are logged and
+/// dropped; no document lifecycle is wired up.  Stage 2 proper would
+/// attach the real Bridge (with its Document, FakeSocket, message
+/// pump etc.) to the picker page.
+class EmbedPlaceholderBridge : public QObject
+{
+    Q_OBJECT
+
+public:
+    using QObject::QObject;
+
+public slots:
+    void debug(const QString& msg);
+    void error(const QString& msg);
+    QVariant cool(const QString& msg);
+};
 
 /// Shows an integrator's web UI in a QWebEngineView.  When the user
 /// opens a document, the integrator creates an iframe pointing to the
@@ -49,6 +69,8 @@ private:
     QString _accessToken;
     QString _coolServer;
     QString _coolPath;
+    /// Port of the embed-mode HTTP server (0 when embed mode is off).
+    quint16 _embedPort = 0;
 };
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

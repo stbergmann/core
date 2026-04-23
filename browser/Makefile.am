@@ -165,7 +165,13 @@ BACKSTAGE_SVG_NAMES = \
 	lc_save.svg \
 	lc_saveacopy.svg \
 	lc_printlayout.svg \
-	lc_exportto.svg
+	lc_exportto.svg \
+	lc_edit.svg \
+	cloud-providers/nextcloud.svg \
+	cloud-providers/opencloud.svg \
+	cloud-providers/seafile.svg \
+	cloud-providers/hyperdrive.svg \
+	cloud-providers/generic.svg
 
 BACKSTAGE_SVGS = $(addprefix $(icons_dir)/,$(BACKSTAGE_SVG_NAMES))
 
@@ -610,6 +616,8 @@ COOL_JS_LST =\
 	src/control/backstage/HomeView.tsx \
 	src/control/backstage/InfoView.tsx \
 	src/control/backstage/ExportView.tsx \
+	src/control/backstage/OpenView.tsx \
+	src/control/backstage/CloudDialogs.tsx \
 	src/control/Control.BackstageView.ts \
 	src/control/Control.ContextToolbar.ts \
 	src/control/Control.SidebarBase.ts \
@@ -1281,6 +1289,8 @@ pot:
 		src/control/backstage/HomeView.tsx \
 		src/control/backstage/TemplatesView.tsx \
 		src/control/backstage/InfoView.tsx \
+		src/control/backstage/OpenView.tsx \
+		src/control/backstage/CloudDialogs.tsx \
 		src/control/Control.Command.js \
 		src/control/Control.DocumentNameInput.js \
 		src/control/Control.DocumentRepair.js \

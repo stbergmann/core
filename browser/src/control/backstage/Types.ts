@@ -22,7 +22,7 @@ interface BackstageTabConfig {
 	type: 'view' | 'action' | 'separator';
 	icon?: string;
 	visible?: boolean;
-	viewType?: 'home' | 'templates' | 'info' | 'export';
+	viewType?: 'home' | 'templates' | 'info' | 'export' | 'open';
 	actionType?:
 		| 'open'
 		| 'openremote'
@@ -87,6 +87,20 @@ interface ExportOptionItem {
 interface ExportSections {
 	exportAs: ExportOptionItem[];
 	downloadAs: ExportOptionItem[];
+}
+
+type CloudProviderKind =
+	| 'nextcloud'
+	| 'opencloud'
+	| 'seafile'
+	| 'hyperdrive'
+	| 'other';
+
+interface CloudProvider {
+	id: string;
+	kind: CloudProviderKind;
+	name: string;
+	url: string;
 }
 
 /*

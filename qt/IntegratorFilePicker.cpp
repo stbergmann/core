@@ -258,13 +258,13 @@ private:
     QTcpServer* _server;
 };
 
-/// Attaches an X-Collab-Frame-Origin header to every outgoing
-/// request from the picker page, carrying the origin of our local
-/// HTTP server (http://localhost:<embed-port>).  The integrator's
-/// CSP listener is expected to read it and add that single origin
-/// to frame-src, so the integrator does not have to allowlist all
-/// of localhost:*.  Piggybacks on the normal request flow so no
-/// extra endpoint or handshake is needed.
+/// Attaches an X-Collab-Frame-Origin header to top-level document
+/// navigations from the picker page, carrying the origin of our
+/// local HTTP server (http://localhost:<embed-port>).  The
+/// integrator's CSP listener is expected to read it and add that
+/// single origin to frame-src, so the integrator does not have to
+/// allowlist all of localhost:*.  Piggybacks on the normal request
+/// flow so no extra endpoint or handshake is needed.
 class FrameOriginInterceptor
     : public QWebEngineUrlRequestInterceptor
 {
@@ -278,7 +278,18 @@ public:
 
     void interceptRequest(QWebEngineUrlRequestInfo& info) override
     {
-        info.setHttpHeader("X-Collab-Frame-Origin", _headerValue);
+        const bool isMainFrame = info.resourceType()
+            == QWebEngineUrlRequestInfo::ResourceTypeMainFrame;
+        if (isMainFrame)
+        {
+            info.setHttpHeader(
+                "X-Collab-Frame-Origin", _headerValue);
+        }
+        LOG_TRC("FrameOriginInterceptor: "
+                << (isMainFrame ? "stamped" : "skipped")
+                << " resourceType=" << int(info.resourceType())
+                << " url="
+                << info.requestUrl().toString().toStdString());
     }
 
 private:

@@ -149,12 +149,44 @@ protected:
 
 namespace
 {
-/// CODA_EMBED_IFRAME=1 switches on the POC for rendering the
-/// integrator's document iframe in-place (instead of bouncing to a
-/// separate CODA window).
-bool isEmbedMode()
+/// Probe whether the integrator at serverUrl implements the
+/// X-Collab-Frame-Origin protocol: send a GET carrying the header
+/// with our candidate embed origin and check whether the response's
+/// Content-Security-Policy mentions that origin (which the
+/// integrator's CSP listener is expected to echo into frame-src).
+/// On success, the picker can safely switch into embed mode;
+/// otherwise we fall back to the open-in-new-window flow.  Runs
+/// synchronously with a short timeout so the picker opens promptly
+/// on integrators that don't implement the protocol.
+bool probeFrameOriginProtocol(const QString& serverUrl, quint16 port)
 {
-    return qEnvironmentVariableIsSet("CODA_EMBED_IFRAME");
+    const QByteArray origin =
+        "http://localhost:" + QByteArray::number(port);
+
+    QNetworkAccessManager nam;
+    QEventLoop loop;
+    QNetworkRequest req{QUrl(serverUrl)};
+    req.setRawHeader("X-Collab-Frame-Origin", origin);
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+    req.setMaximumRedirectsAllowed(5);
+    QNetworkReply* reply = nam.get(req);
+    QObject::connect(reply, &QNetworkReply::finished,
+                     &loop, &QEventLoop::quit);
+    QTimer::singleShot(3000, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    bool supported = false;
+    if (reply->isFinished()
+        && reply->error() == QNetworkReply::NoError)
+    {
+        const QByteArray csp =
+            reply->rawHeader("Content-Security-Policy");
+        if (csp.contains(origin))
+            supported = true;
+    }
+    reply->deleteLater();
+    return supported;
 }
 
 /// Trivial static-file server on 127.0.0.1:<ephemeral>.  Serves
@@ -352,31 +384,35 @@ IntegratorFilePicker::IntegratorFilePicker(const QString& serverUrl,
     layout->addWidget(_webView);
     layout->setContentsMargins(0, 0, 0, 0);
 
-    if (isEmbedMode())
+    // Optimistically start the embed HTTP server so we have a
+    // candidate local origin to advertise; activate embed mode only
+    // if the integrator's CSP response echoes that origin back,
+    // signalling it implements the X-Collab-Frame-Origin protocol.
+    // Falls back to the open-in-new-window flow otherwise.
+    QString distRoot = QString::fromStdString(getDataDir())
+                     + "/browser/dist";
+    auto* httpServer = new EmbedHttpServer(distRoot, this);
+    if (httpServer->listen()
+        && probeFrameOriginProtocol(serverUrl, httpServer->port()))
     {
-        QString distRoot = QString::fromStdString(getDataDir())
-                         + "/browser/dist";
-        auto* httpServer = new EmbedHttpServer(distRoot, this);
-        if (httpServer->listen())
-        {
-            _embedPort = httpServer->port();
-            LOG_INF("IntegratorFilePicker: embed mode on, serving "
-                    << distRoot.toStdString() << " at "
-                    << "http://localhost:" << _embedPort);
-            // Advertise the port to the integrator via a custom
-            // request header on every outgoing request, so its CSP
-            // listener can whitelist exactly our origin in frame-src
-            // instead of all of localhost:*.
-            page->setUrlRequestInterceptor(
-                new FrameOriginInterceptor(_embedPort, this));
-        }
-        else
-        {
-            LOG_WRN("IntegratorFilePicker: embed mode requested but "
-                    "HTTP server failed to listen");
-        }
+        _embedPort = httpServer->port();
+        LOG_INF("IntegratorFilePicker: embed mode on, serving "
+                << distRoot.toStdString() << " at "
+                << "http://localhost:" << _embedPort);
+        // Advertise the port to the integrator via a custom request
+        // header on every main-frame navigation, so its CSP listener
+        // allowlists exactly our origin in frame-src:
+        page->setUrlRequestInterceptor(
+            new FrameOriginInterceptor(_embedPort, this));
         // The QWebChannel + real Bridge are installed in
         // attachEmbeddedDocument(), once we have a DocumentData.
+    }
+    else
+    {
+        LOG_INF("IntegratorFilePicker: integrator does not echo "
+                "X-Collab-Frame-Origin; falling back to "
+                "open-in-new-window");
+        httpServer->deleteLater();
     }
 
     _webView->load(QUrl(resolveLandingUrl(serverUrl)));

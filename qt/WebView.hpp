@@ -30,7 +30,7 @@ namespace coda
 /// Create a QWebChannel on page, construct a Bridge bound to document
 /// (with host window / webview), register the Bridge as "bridge" on
 /// the channel, and attach the channel to the page.  Shared between
-/// the normal open-in-new-window flow and the CODA_EMBED_IFRAME POC.
+/// the normal open-in-new-window flow and the embed-mode flow.
 /// Ownership: Bridge is parented on the channel (which is parented on
 /// the page), so everything lives as long as the page.
 Bridge* attachRemoteBridge(QWebEnginePage* page,

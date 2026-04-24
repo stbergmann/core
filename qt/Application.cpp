@@ -15,6 +15,7 @@
 #include <qt/qt.hpp>
 
 #include <common/Log.hpp>
+#include <common/Prefs.hpp>
 #include <common/RecentFiles.hpp>
 #include <common/SettingsStorage.hpp>
 
@@ -27,6 +28,7 @@
 
 QWebEngineProfile* Application::globalProfile = nullptr;
 RecentFiles Application::recentFiles;
+std::unique_ptr<Prefs> Application::prefs;
 
 void Application::initialize()
 {
@@ -44,7 +46,11 @@ void Application::initialize()
 
     // Initialize recent files
     Poco::Path configDir = Desktop::getConfigPath();
-    recentFiles.load(configDir.append("RecentDocuments.conf").toString(), 15);
+    recentFiles.load(Poco::Path(configDir).append("RecentDocuments.conf").toString(), 15);
+
+    // Initialize persistent prefs
+    prefs = std::make_unique<Prefs>(
+        Poco::Path(configDir).append("coda-prefs.json").toString());
 }
 
 Poco::Path Desktop::getConfigPath()
@@ -69,5 +75,7 @@ std::string Desktop::getDataDir()
 QWebEngineProfile* Application::getProfile() { return globalProfile; }
 
 RecentFiles& Application::getRecentFiles() { return recentFiles; }
+
+Prefs& Application::getPrefs() { return *prefs; }
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

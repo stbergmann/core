@@ -642,6 +642,24 @@ class QtAppInitializer extends MobileAppInitializer {
 			}
 			messageQueue.length = 0;
 
+			// Pull the full persistent pref set from the native side
+			// in one shot and prime the pref cache.  Per-origin
+			// localStorage can't be trusted under the embed-mode
+			// HTTP server's ephemeral port; the bridge-backed store
+			// is origin-independent.  After this lands, every
+			// prefs.get() hits the cache and stays synchronous.
+			bridge.getAllPrefs((jsonStr) => {
+				try {
+					const obj = JSON.parse(jsonStr || '{}');
+					for (const [key, value] of Object.entries(obj)) {
+						window.prefs._localStorageCache[key] = value;
+					}
+				} catch (e) {
+					console.warn('getAllPrefs parse failed: ' + e);
+				}
+				window.prefs._bridgeReady = true;
+			});
+
 			window.qtBridgeReady = true;
 			window.dispatchEvent(new Event('qtbridgeready'));
 			if (bridge.debug) {
@@ -968,6 +986,7 @@ function showWelcomeSVG() {
 		// update only once
 		setMultiple: function (prefsObject) {
 			const browserSettingEnabled = global.prefs.useBrowserSetting;
+			const bridgeAvailable = window.bridge && typeof window.bridge.setPref === 'function';
 			for (const [key, value] of Object.entries(prefsObject)) {
 				if (browserSettingEnabled) {
 					const oldValue = global.prefs._userBrowserSetting[key];
@@ -977,6 +996,9 @@ function showWelcomeSVG() {
 				}
 				if (global.prefs.canPersist) {
 					global.localStorage.setItem(key, value);
+				}
+				if (bridgeAvailable) {
+					window.bridge.setPref(key, value);
 				}
 				global.prefs._localStorageCache[key] = value;
 			}
@@ -1001,6 +1023,9 @@ function showWelcomeSVG() {
 			}
 			if (global.prefs.canPersist) {
 				global.localStorage.setItem(key, value);
+			}
+			if (window.bridge && typeof window.bridge.setPref === 'function') {
+				window.bridge.setPref(key, value);
 			}
 			global.prefs._localStorageCache[key] = value;
 		},

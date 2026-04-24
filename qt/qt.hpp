@@ -7,8 +7,11 @@
 
 #pragma once
 
+#include <memory>
+
 #include <QApplication>
 #include <QWebEngineProfile>
+#include "common/Prefs.hpp"
 #include "common/RecentFiles.hpp"
 
 extern int coolwsd_server_socket_fd;
@@ -20,11 +23,13 @@ class Application
 private:
     static QWebEngineProfile* globalProfile;
     static RecentFiles recentFiles;
+    static std::unique_ptr<Prefs> prefs;
 
 public:
     static void initialize();
     static QWebEngineProfile* getProfile();
     static RecentFiles& getRecentFiles();
+    static Prefs& getPrefs();
 };
 
 namespace

@@ -32,7 +32,9 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QTcpServer>
+#include <QSslConfiguration>
+#include <QSslServer>
+#include <QSslSocket>
 #include <QTcpSocket>
 #include <QTimer>
 #include <QUrlQuery>
@@ -161,7 +163,7 @@ namespace
 bool probeFrameOriginProtocol(const QString& serverUrl, quint16 port)
 {
     const QByteArray origin =
-        "http://localhost:" + QByteArray::number(port);
+        "https://localhost:" + QByteArray::number(port);
 
     QNetworkAccessManager nam;
     QEventLoop loop;
@@ -189,21 +191,48 @@ bool probeFrameOriginProtocol(const QString& serverUrl, quint16 port)
     return supported;
 }
 
-/// Trivial static-file server on 127.0.0.1:<ephemeral>.  Serves
-/// browser/dist/ so cool.html and its assets can be reached under an
-/// origin the integrator's `frame-src` allowlist admits (see the
-/// `http://localhost:*` hack in nextcloud-cool-test-env.sh).  GET
-/// only, no keep-alive, no thread pool - fine for the POC.
+/// Trivial static-file HTTPS server on 127.0.0.1:<ephemeral>.
+/// Serves browser/dist/ so cool.html and its assets can be reached
+/// under an origin the integrator's `frame-src` allowlist admits
+/// (see the test-env's richdocuments patch).  Uses TLS with the
+/// process-wide ephemeral self-signed cert from
+/// Application::getEmbedCert(): this avoids the
+/// upgrade-insecure-requests CSP directive forcibly rewriting our
+/// advertised origin to https and breaking the iframe load.  The
+/// picker page programmatically trusts this cert via its
+/// certificateError handler; nothing is ever installed in any
+/// system or external trust store.  GET only, no keep-alive, no
+/// thread pool - fine for the POC.
 class EmbedHttpServer : public QObject
 {
 public:
     EmbedHttpServer(const QString& rootDir, QObject* parent)
         : QObject(parent)
         , _root(QDir(rootDir).absolutePath())
-        , _server(new QTcpServer(this))
+        , _server(new QSslServer(this))
     {
-        QObject::connect(_server, &QTcpServer::newConnection,
-                         this, [this] { onNewConnection(); });
+        QSslConfiguration cfg = QSslConfiguration::defaultConfiguration();
+        cfg.setLocalCertificate(Application::getEmbedCert());
+        cfg.setPrivateKey(Application::getEmbedKey());
+        cfg.setPeerVerifyMode(QSslSocket::VerifyNone);
+        // Pin ALPN to HTTP/1.1 so Chromium doesn't try to speak
+        // HTTP/2 to a server that only handles HTTP/1.1 GETs:
+        cfg.setAllowedNextProtocols({QByteArray("http/1.1")});
+        _server->setSslConfiguration(cfg);
+
+        // QSslServer fires newConnection at TCP-accept time, before
+        // the TLS handshake; pendingConnectionAvailable fires after
+        // the handshake completes, which is when nextPendingConnection
+        // actually has a QSslSocket to hand back.
+        QObject::connect(_server, &QTcpServer::pendingConnectionAvailable,
+                         this, &EmbedHttpServer::onNewConnection);
+        QObject::connect(_server, &QSslServer::sslErrors,
+                         this, [](QSslSocket*,
+                                  const QList<QSslError>& errors) {
+                             for (const auto& e : errors)
+                                 LOG_WRN("EmbedHttpServer: sslError "
+                                         << e.errorString().toStdString());
+                         });
     }
 
     bool listen() { return _server->listen(QHostAddress::LocalHost, 0); }
@@ -287,12 +316,12 @@ private:
     }
 
     QString _root;
-    QTcpServer* _server;
+    QSslServer* _server;
 };
 
 /// Attaches an X-Collab-Frame-Origin header to top-level document
 /// navigations from the picker page, carrying the origin of our
-/// local HTTP server (http://localhost:<embed-port>).  The
+/// local HTTPS server (https://localhost:<embed-port>).  The
 /// integrator's CSP listener is expected to read it and add that
 /// single origin to frame-src, so the integrator does not have to
 /// allowlist all of localhost:*.  Piggybacks on the normal request
@@ -304,7 +333,7 @@ public:
     FrameOriginInterceptor(quint16 port, QObject* parent)
         : QWebEngineUrlRequestInterceptor(parent)
         , _headerValue(
-            ("http://localhost:" + QString::number(port)).toUtf8())
+            ("https://localhost:" + QString::number(port)).toUtf8())
     {
     }
 
@@ -398,7 +427,7 @@ IntegratorFilePicker::IntegratorFilePicker(const QString& serverUrl,
         _embedPort = httpServer->port();
         LOG_INF("IntegratorFilePicker: embed mode on, serving "
                 << distRoot.toStdString() << " at "
-                << "http://localhost:" << _embedPort);
+                << "https://localhost:" << _embedPort);
         // Advertise the port to the integrator via a custom request
         // header on every main-frame navigation, so its CSP listener
         // allowlists exactly our origin in frame-src:
@@ -448,7 +477,7 @@ void IntegratorFilePicker::attachEmbeddedDocument(
     coda::wireCollabMessagesToBridge(
         _bridge, _document._remoteInfo.get());
 
-    // Build the URL we rewrite the iframe to: our local HTTP server's
+    // Build the URL we rewrite the iframe to: our local HTTPS server's
     // /cool.html with CODA-local params added.  Preserve the UI
     // hints (lang, closebutton, revisionhistory) from the original
     // NC iframe URL, but drop WOPISrc and access_token: their
@@ -462,7 +491,7 @@ void IntegratorFilePicker::attachEmbeddedDocument(
     embedQuery.removeAllQueryItems("WOPISrc");
     embedQuery.removeAllQueryItems("access_token");
     QUrl target;
-    target.setScheme("http");
+    target.setScheme("https");
     target.setHost("localhost");
     target.setPort(_embedPort);
     target.setPath("/cool.html");

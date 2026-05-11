@@ -43,6 +43,15 @@ class Bridge : public QObject
     void saveDocumentAs();
     void createAndStartMessagePumpThread();
 
+    /// Upload the local file (assumed already written by a
+    /// successful .uno:Save) to the integrator via the per-document
+    /// collab WS.  No-op if the document is not a remote one (no
+    /// _remoteInfo / no collab WS).  Once the POST completes,
+    /// honours the JS-side _codaUploadAndSwitchAfterSave flag (set
+    /// by Permission.js when handing local-edit off to server-mode
+    /// collab) and switches the webview to server mode.
+    void uploadLocalFileToServer();
+
 public:
     explicit Bridge(QObject* parent, coda::DocumentData& document, QWidget* window, QWebEngineView* webView)
         : QObject(parent)

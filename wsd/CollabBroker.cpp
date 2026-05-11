@@ -45,6 +45,7 @@ std::atomic<uint64_t> HandlerIdCounter{0};
 CollabBroker::CollabBroker(const std::string& docKey, const std::string& wopiSrc)
     : _docKey(docKey)
     , _wopiSrc(wopiSrc)
+    , _idleSince(std::chrono::steady_clock::now())
     , _accessToken(CollabAccessTokenLength, CollabAccessTokenRotation)
 {
     LOG_INF("CollabBroker created for docKey [" << _docKey << ']');
@@ -93,6 +94,15 @@ void CollabBroker::removeHandler(const std::shared_ptr<CollabSocketHandler>& han
 
     cleanupExpiredHandlers();
     LOG_DBG("CollabBroker [" << _docKey << "]: remaining handlers: " << _handlers.size());
+
+    // No handlers left: start the idle clock for
+    // cleanupCollabBrokers' grace period.  _editingStarted is left
+    // set on purpose so a transient client disconnect (e.g. network
+    // blip) can reconnect within the grace window and find the
+    // editing state intact; the broker is reclaimed once the grace
+    // period expires without a reconnect.
+    if (_handlers.empty())
+        _idleSince = std::chrono::steady_clock::now();
 }
 
 size_t CollabBroker::getHandlerCount() const
@@ -116,7 +126,16 @@ bool CollabBroker::isEmpty() const
 bool CollabBroker::isIdle() const
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    return _handlers.empty() && !_editingStarted;
+    return _handlers.empty();
+}
+
+bool CollabBroker::isReclaimable(
+    std::chrono::steady_clock::duration grace) const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (!_handlers.empty())
+        return false;
+    return std::chrono::steady_clock::now() - _idleSince >= grace;
 }
 
 void CollabBroker::setWopiInfo(Poco::JSON::Object::Ptr wopiInfo)
@@ -396,11 +415,16 @@ std::shared_ptr<CollabBroker> findOrCreateCollabBroker(const std::string& docKey
 
 void cleanupCollabBrokers()
 {
+    // Grace period before reclaiming an idle broker, so a transient
+    // client disconnect (network blip) can reconnect and re-find the
+    // same broker with its state intact.
+    constexpr auto grace = std::chrono::seconds(30);
+
     std::lock_guard<std::mutex> lock(CollabBrokersMutex);
 
     for (auto it = CollabBrokers.begin(); it != CollabBrokers.end(); )
     {
-        if (it->second && it->second->isIdle())
+        if (it->second && it->second->isReclaimable(grace))
         {
             LOG_INF("Removing idle CollabBroker for docKey [" << it->first << ']');
             it = CollabBrokers.erase(it);

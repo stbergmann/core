@@ -36,9 +36,10 @@
 #include <QSslServer>
 #include <QSslSocket>
 #include <QTcpSocket>
+#include <QCloseEvent>
+#include <QMessageBox>
 #include <QTimer>
 #include <QUrlQuery>
-#include <QVBoxLayout>
 #include <QWebEnginePage>
 #include <QWebEngineUrlRequestInfo>
 #include <QWebEngineUrlRequestInterceptor>
@@ -132,7 +133,7 @@ protected:
             }
             else
             {
-                picker->accept();
+                emit picker->wopiSelected();
             }
             return false;
         }
@@ -398,20 +399,18 @@ QString resolveLandingUrl(const QString& serverUrl)
 
 IntegratorFilePicker::IntegratorFilePicker(const QString& serverUrl,
                                            QWidget* parent)
-    : QDialog(parent)
+    : QMainWindow(parent)
 {
     setWindowTitle("Open Remote Document");
     resize(800, 900);
 
-    auto* layout = new QVBoxLayout(this);
     _webView = new QWebEngineView;
 
     auto* page = new InterceptPage(_webView);
     page->picker = this;
     _webView->setPage(page);
 
-    layout->addWidget(_webView);
-    layout->setContentsMargins(0, 0, 0, 0);
+    setCentralWidget(_webView);
 
     // Optimistically start the embed HTTP server so we have a
     // candidate local origin to advertise; activate embed mode only
@@ -546,8 +545,29 @@ void IntegratorFilePicker::extractAccessToken()
     extractAccessTokenAsync([this](const QString& val) {
         if (!val.isEmpty())
             _accessToken = val;
-        accept();
+        emit wopiSelected();
     });
+}
+
+void IntegratorFilePicker::closeEvent(QCloseEvent* ev)
+{
+    if (_bridge && _bridge->isModified())
+    {
+        QMessageBox msgBox(this);
+        msgBox.setWindowTitle(tr("Unsaved Changes"));
+        msgBox.setText(tr("The document has unsaved changes. "
+                          "Do you want to close anyway?"));
+        msgBox.setStandardButtons(QMessageBox::Discard
+                                  | QMessageBox::Cancel);
+        msgBox.setDefaultButton(QMessageBox::Cancel);
+        msgBox.setIcon(QMessageBox::Warning);
+        if (msgBox.exec() == QMessageBox::Cancel)
+        {
+            ev->ignore();
+            return;
+        }
+    }
+    QMainWindow::closeEvent(ev);
 }
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

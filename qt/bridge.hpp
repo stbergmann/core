@@ -14,6 +14,7 @@
 #include <QWebEngineView>
 #include <QObject>
 #include <QVariant>
+#include <functional>
 #include <string>
 #include <thread>
 #include "Document.hpp"
@@ -38,10 +39,25 @@ class Bridge : public QObject
     std::thread _app2js;
     // true between sending a copy/cut command and receiving its COMMANDRESULT
     bool _copyInProgress = false;
+    // true from JS-side SAVESTARTED until the .uno:Save COMMANDRESULT
+    // has been observed and (for remote docs) the
+    // uploadLocalFileToServer round-trip has completed.  Watched by
+    // close-handlers so they don't prompt about "unsaved changes"
+    // during the window where core's status indicator has already
+    // gone away but the save is not actually finished.
+    bool _saveInFlight = false;
+    // One-shot callback to run when _saveInFlight transitions back to
+    // false.  Used by closeEvent paths to defer the window-close
+    // until the in-flight save has fully completed.
+    std::function<void()> _onSaveComplete;
 
     void promptSaveLocation(std::function<void(const std::string&, const std::string&)> callback);
     void saveDocumentAs();
     void createAndStartMessagePumpThread();
+
+    /// Mark the current save as complete: clear _saveInFlight and
+    /// invoke (then drop) any pending _onSaveComplete callback.
+    void finishSave();
 
     /// Upload the local file (assumed already written by a
     /// successful .uno:Save) to the integrator via the per-document
@@ -70,6 +86,21 @@ public:
 
     // send Online → JS
     void send2JS(const std::vector<char>& buffer);
+
+    /// True while a user-initiated .uno:Save is in flight (between
+    /// the JS-side SAVESTARTED hand-off and the COMMANDRESULT, plus -
+    /// for remote docs - the subsequent integrator upload).  Close
+    /// handlers consult this so they don't show the "unsaved changes"
+    /// prompt during the window after core's "Saving..." status
+    /// indicator has gone away but the dispatch has not yet round-
+    /// tripped back through the COMMANDRESULT path.
+    bool isSaveInFlight() const { return _saveInFlight; }
+
+    /// Register a one-shot callback to run when the in-flight save
+    /// completes (success or failure).  Replaces any previously
+    /// registered callback.  If no save is in flight, the callback
+    /// is invoked immediately.
+    void onSaveComplete(std::function<void()> callback);
 
     /// Announce an orderly close to the per-document collab broker
     /// by sending {"type":"bye"} on its WebSocket.  Must be called

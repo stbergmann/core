@@ -21,6 +21,7 @@
 #include <qt/RemoteOpen.hpp>
 #include <qt/WebView.hpp>
 
+#include <QApplication>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
@@ -37,7 +38,6 @@
 #include <QSslSocket>
 #include <QTcpSocket>
 #include <QCloseEvent>
-#include <QMessageBox>
 #include <QTimer>
 #include <QUrlQuery>
 #include <QWebEnginePage>
@@ -551,21 +551,33 @@ void IntegratorFilePicker::extractAccessToken()
 
 void IntegratorFilePicker::closeEvent(QCloseEvent* ev)
 {
-    if (_bridge && _bridge->isModified())
+    LOG_TRC("IntegratorFilePicker::closeEvent: "
+            << "_bridge=" << _bridge
+            << " isSaveInFlight="
+            << (_bridge ? _bridge->isSaveInFlight() : false));
+    // Defer the close until any in-flight save's upload round-trip has finished, otherwise
+    // tearing down the bridge would close the per-document collab WS that uploadLocalFileToServer
+    // is using to push the just-saved bytes back to the integrator, and those bytes would be lost:
+    if (_bridge && _bridge->isSaveInFlight())
     {
-        QMessageBox msgBox(this);
-        msgBox.setWindowTitle(tr("Unsaved Changes"));
-        msgBox.setText(tr("The document has unsaved changes. "
-                          "Do you want to close anyway?"));
-        msgBox.setStandardButtons(QMessageBox::Discard
-                                  | QMessageBox::Cancel);
-        msgBox.setDefaultButton(QMessageBox::Cancel);
-        msgBox.setIcon(QMessageBox::Warning);
-        if (msgBox.exec() == QMessageBox::Cancel)
-        {
-            ev->ignore();
-            return;
-        }
+        LOG_TRC("IntegratorFilePicker::closeEvent: save in flight, "
+                "deferring close");
+        // Acknowledge the close-click visually with a busy cursor for immediate feedback (the
+        // in-page modal that we re-fire below has a 700ms paint delay - see
+        // Control.UIManager.ts openBusyPopup - so on a fast finish it might never appear, but
+        // the cursor change happens instantly):
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        if (_bridge)
+            _bridge->evalJS(
+                "if (window.app && window.app.map)"
+                "  window.app.map.fire('showbusy',"
+                "    {label: window._('Saving...')});");
+        _bridge->onSaveComplete([this]() {
+            QApplication::restoreOverrideCursor();
+            this->close();
+        });
+        ev->ignore();
+        return;
     }
     // Tell the per-document collab broker we are leaving voluntarily
     // before tearing the window down.  Must happen here rather than

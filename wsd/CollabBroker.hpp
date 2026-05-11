@@ -91,6 +91,12 @@ class CollabBroker : public std::enable_shared_from_this<CollabBroker>
     /// removeHandler() whenever _handlers transitions to empty.
     std::chrono::steady_clock::time_point _idleSince;
 
+    /// True when the last handler to leave announced an orderly
+    /// departure via {"type":"bye"}.  In that case we know no
+    /// reconnect is coming, so isReclaimable() returns true
+    /// immediately, bypassing the grace period.
+    bool _gracefulClose = false;
+
     /// WOPI info from the first authenticated handler (shared by all)
     Poco::JSON::Object::Ptr _wopiInfo;
 

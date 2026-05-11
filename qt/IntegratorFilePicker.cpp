@@ -567,6 +567,13 @@ void IntegratorFilePicker::closeEvent(QCloseEvent* ev)
             return;
         }
     }
+    // Tell the per-document collab broker we are leaving voluntarily
+    // before tearing the window down.  Must happen here rather than
+    // in Bridge's destructor, because by the time the destructor
+    // runs the QMainWindow's value-typed _document (which the bridge
+    // holds a reference to) has already been destroyed.
+    if (_bridge)
+        _bridge->sendCollabBye();
     QMainWindow::closeEvent(ev);
 }
 

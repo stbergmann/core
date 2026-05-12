@@ -63,7 +63,73 @@ window.L.Map.include({
 		};
 
 		window.switchToServerMode = function () {
+			// Swap our underlying WebSocket from the FakeWebSocket
+			// (routed through the Qt bridge to the in-process kit) to
+			// a real WebSocket pointing at the cool server.  Mirrors
+			// the COWASM equivalent in browser/js/global.js (which
+			// keeps the page loaded and just changes where doc-
+			// protocol traffic flows); the bridge-side teardown of
+			// the local kit and the per-document collab WS happens in
+			// Bridge.cpp's switchToServerMode handler.
+
+			// Tell the bridge to tear down the local kit + collab WS
+			// first, *before* muting postMobileMessage below.
 			window.postMobileMessage('switchToServerMode');
+
+			// From here on CODA-Q acts as a plain browser client.
+			window.postMobileMessage = function() {};
+			window.ThisIsTheQtApp = false;
+			window.ThisIsAMobileApp = false;
+
+			// Close the FakeWebSocket so Socket.connect() below
+			// cleanly drops it before assigning the new one.
+			if (window.TheFakeWebSocket) {
+				try { window.TheFakeWebSocket.close(); }
+				catch (e) { /* already closed */ }
+				window.TheFakeWebSocket = null;
+			}
+
+			// Update map.options so Socket.ts's _onSocketOpen (which
+			// sends the 'load url=...' message from map.options.doc
+			// when the new WS opens) targets the WOPI document on
+			// the cool server, not the local file path that CODA-Q's
+			// local-edit mode set up.  Also flip wopi=true so the
+			// rest of the JS treats this session as a WOPI session
+			// from here on.
+			var ri = window._codaRemoteInfo || {};
+			app.map.options.doc = ri.wopiSrc;
+			app.map.options.docParams = {
+				access_token: ri.accessToken,
+				access_token_ttl: '0',
+				permission: 'edit',
+			};
+			app.map.options.wopi = true;
+			app.map.options.wopiSrc = ri.wopiSrc;
+			window.wopiSrc = ri.wopiSrc;
+
+			// Build the cool-server-targeted /cool/ws URL.  Put
+			// access_token et al as top-level query parameters
+			// alongside WOPISrc (the format documented at
+			// wsd/RequestDetails.hpp:137: "/cool/ws?WOPISrc=...
+			// [&<options>][&compat=...]") rather than encoded
+			// inside the WOPISrc value as COWASM does, so the
+			// cool server's allowedOrigin bypass (which looks for
+			// access_token among the top-level params via
+			// RequestDetails::getParamByName) can recognise this
+			// as a WOPI-token-authenticated request.
+			var wsScheme = ri.coolServer.startsWith('https:')
+				? 'wss:' : 'ws:';
+			var wsHostPart = ri.coolServer.replace(/^https?:/, '');
+			var wsURI = wsScheme + wsHostPart + '/cool/ws?WOPISrc='
+				+ encodeURIComponent(ri.wopiSrc)
+				+ '&access_token='
+				+ encodeURIComponent(ri.accessToken)
+				+ '&access_token_ttl=0&permission=edit&compat=/ws';
+			app.console.log(
+				'switchToServerMode: opening ' + wsURI);
+
+			var ws = new WebSocket(wsURI);
+			app.socket.connect(ws);
 		};
 
 		// Replay any collab messages that arrived before

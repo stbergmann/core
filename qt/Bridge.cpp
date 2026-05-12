@@ -466,6 +466,23 @@ QVariant Bridge::cool(const QString& messageStr)
         std::string initMsg(_document._fileURL.toString() +
                             (" " + std::to_string(_document._appDocId)));
         fakeSocketWriteQueue(_document._fakeClientFd, initMsg.c_str(), initMsg.size());
+
+        // For a remote document, expose the WOPI parameters on window so the JS-side
+        // switchToServerMode can build a /cool/ws URL pointing at the cool server,
+        // without round-tripping back through the bridge.
+        if (_document._remoteInfo)
+        {
+            auto& ri = *_document._remoteInfo;
+            QJsonObject obj;
+            obj["coolServer"] = ri.coolServer;
+            obj["coolPath"] = ri.coolPath;
+            obj["wopiSrc"] = ri.wopiSrc;
+            obj["accessToken"] = ri.accessToken;
+            QString js = "window._codaRemoteInfo = "
+                + QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact))
+                + ";";
+            evalJS(js.toStdString());
+        }
     }
     else if (tokens.equals(0, "loaddocument"))
     {
@@ -1051,57 +1068,36 @@ QVariant Bridge::cool(const QString& messageStr)
     }
     else if (tokens.equals(0, "switchToServerMode"))
     {
-        // Switch from local to server-rendered collaborative editing
-        // by navigating to the COOL server's cool.html.
+        // Tear down the local-LOKit side of a remote document so JS can
+        // swap its underlying WebSocket from the FakeWebSocket (routed
+        // through this bridge to the in-process kit) to a real one
+        // pointing at the cool server.  JS does the swap itself in
+        // Permission.js's _setupCodaCollab; this branch is just the
+        // bridge-side teardown.  Note: do NOT navigate the webview -
+        // the whole point of this seamless switch (vs. the original
+        // _webView->load(coolUrl) path) is to keep the page loaded.
         if (!_document._remoteInfo)
             return {};
 
         auto& ri = *_document._remoteInfo;
 
-        // TODO: if the document has been modified locally, save and
-        // upload via the collab endpoint before switching.
-
-        // Stop the local FakeSocket message pump.
+        // Stop the local FakeSocket message pump.  The in-process kit
+        // will exit on its own once its socket is gone.
         if (_closeNotificationPipeForForwardingThread[0] >= 0)
         {
             fakeSocketClose(_closeNotificationPipeForForwardingThread[0]);
             _closeNotificationPipeForForwardingThread[0] = -1;
         }
 
-        // Close the collab WebSocket.  Send a {"type":"bye"} first
-        // so the server-side broker recognises this as an orderly
-        // close and reclaims itself immediately instead of waiting
-        // out its idle grace period.  Then disconnect signal slots
-        // so any textMessageReceived events still queued in the Qt
-        // event loop do not reach the new page that we are about to
-        // load (where they would land in window._codaCollabQueue
-        // and feed the post-switch _setupCodaCollab bail-out path).
+        // Close the collab WebSocket.  Send a {"type":"bye"} first so the server-side broker
+        // recognises this as an orderly close and reclaims itself immediately instead of waiting
+        // out its idle grace period.
         if (ri.collabWs)
         {
             ri.collabWs->sendTextMessage(QStringLiteral("{\"type\":\"bye\"}"));
             ri.collabWs->disconnect();
             ri.collabWs->close();
         }
-
-        // Navigate to the COOL server's cool.html with WOPI params.
-        // Use the original versioned path captured by the
-        // IntegratorFilePicker (e.g. /browser/<hash>/cool.html).
-        QString path = ri.coolPath.isEmpty()
-            ? "/browser/dist/cool.html" : ri.coolPath;
-        //TODO: But strip any wasm/ segment that stems from the "TODO: COWASM: Unconditionally serve
-        // Wasm to integrators" code:
-        path.replace("/wasm/cool.html", "/cool.html");
-        QString coolUrl = ri.coolServer + path
-            + "?WOPISrc=" + QUrl::toPercentEncoding(ri.wopiSrc)
-            + "&access_token=" + QUrl::toPercentEncoding(ri.accessToken)
-            + "&permission=edit";
-
-        LOG_TRC("switchToServerMode: loading "
-                << coolUrl.toStdString());
-
-        QMetaObject::invokeMethod(_webView, [this, coolUrl]() {
-            _webView->load(QUrl(coolUrl));
-        }, Qt::QueuedConnection);
     }
     else if (tokens.equals(0, "replayCollabMessages"))
     {

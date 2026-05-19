@@ -22,58 +22,37 @@ window.L.Map.include({
 	_setupCodaCollab: function () {
 		if (!window.mode.isCODesktop())
 			return;
-		// Track collab users, mirroring the COWASM approach in
-		// global.js.
-		if (!window.collabUsers)
-			window.collabUsers = [];
-
-		var that = this;
-		// Called from C++ Bridge::evalJS when the per-document
-		// collab WebSocket receives a message.
-		window._codaCollabMessage = function (msg) {
-			if (msg.type === 'user_list' && Array.isArray(msg.users)) {
-				window.collabUsers = msg.users;
-				window.collabEditingActive = !!msg.editingActive;
-			} else if (msg.type === 'user_joined' && msg.user) {
-				window.collabUsers.push(msg.user);
-			} else if (msg.type === 'user_left' && msg.user) {
-				window.collabUsers = window.collabUsers.filter(
-					function (u) { return u.id !== msg.user.id; });
-			}
-
-			if (msg.type === 'editing_started' && msg.user) {
-				that._onOtherUserEditingStarted(
-					msg.user.name || msg.user.id,
-					msg.user.avatar);
-			} else if (msg.type === 'switch_to_collab') {
-				that._onSwitchToCollabRequest();
-			} else if (msg.type === 'saved_and_switching') {
-				that._onEditorSavedAndSwitching();
-			} else if (msg.type === 'user_left') {
-				that._onCollabUserLeft();
-			}
-		};
-
-		// Send a message on the collab WebSocket via the C++ Bridge.
-		window.collabSendMessage = function (msg) {
-			if (window.postMobileMessage) {
-				window.postMobileMessage(
-					'collab ' + JSON.stringify(msg));
-			}
-		};
+		// The collab WebSocket itself lives in global.collabWs (see
+		// browser/js/global.js), opened by the CODA-Q bootstrap in
+		// main.js via global.collabFetchFile.  This method only
+		// overrides switchToServerMode to do the CODA-Q-flavoured
+		// hand-off (tear down the FakeWebSocket-to-Bridge pipe and
+		// open a real /cool/ws against the cool server).  The
+		// COWASM-flavoured switchToServerMode in global.js targets
+		// the same cool server but uses the COWASM URL layout, so it
+		// isn't suitable here.
 
 		window.switchToServerMode = function () {
-			// Swap our underlying WebSocket from the FakeWebSocket
-			// (routed through the Qt bridge to the in-process kit) to
-			// a real WebSocket pointing at the cool server.  Mirrors
-			// the COWASM equivalent in browser/js/global.js (which
-			// keeps the page loaded and just changes where doc-
-			// protocol traffic flows); the bridge-side teardown of
-			// the local kit and the per-document collab WS happens in
-			// Bridge.cpp's switchToServerMode handler.
-
-			// Tell the bridge to tear down the local kit + collab WS
-			// first, *before* muting postMobileMessage below.
+			// Clear save tracking on the native side first.  After
+			// the switch the page is a plain browser client and the
+			// bridge no longer mediates saves, so any _saveInFlight
+			// set from SAVESTARTED (e.g. by the save-and-switch flow)
+			// would otherwise stay true and block the deferred-close
+			// path forever.  Done as a direct QWebChannel slot call
+			// rather than through postMobileMessage so it can't get
+			// dropped by the mute below.
+			if (window.bridge && window.bridge.saveCompleted)
+				window.bridge.saveCompleted();
+			// Send the bye over our own collab WS, then tell the
+			// bridge to drop its FakeSocket-to-in-process-kit pipe,
+			// *before* muting postMobileMessage below.
+			if (window.collabWs && window.collabWs.readyState === 1) {
+				try { window.collabWs.send('{"type":"bye"}'); }
+				catch (e) { /* already closed */ }
+				try { window.collabWs.close(); }
+				catch (e) { /* already closed */ }
+				window.collabWs = null;
+			}
 			window.postMobileMessage('switchToServerMode');
 
 			// From here on CODA-Q acts as a plain browser client.
@@ -131,29 +110,6 @@ window.L.Map.include({
 			var ws = new WebSocket(wsURI);
 			app.socket.connect(ws);
 		};
-
-		// Replay any collab messages that arrived before
-		// _codaCollabMessage was defined.
-		if (window._codaCollabQueue) {
-			for (var i = 0; i < window._codaCollabQueue.length; i++) {
-				window._codaCollabMessage(window._codaCollabQueue[i]);
-			}
-			delete window._codaCollabQueue;
-		}
-
-		// Tell C++ to replay any collab messages buffered during
-		// the download phase.  C++ calls _codaCollabMessagesReplayed
-		// after all messages have been forwarded.
-		window._codaCollabMessagesReplayed = function () {
-			delete window._codaCollabMessagesReplayed;
-			if (window.collabEditingActive) {
-				// Defer so any pending closealldialogs settles.
-				setTimeout(function () {
-					that._onCollabEditingActive();
-				}, 100);
-			}
-		};
-		window.postMobileMessage('replayCollabMessages');
 	},
 
 	setPermission: function (perm) {
@@ -594,25 +550,18 @@ window.L.Map.include({
 		}
 	},
 
-	// Save any local WASM changes and then switch to server mode.
-	// If the document has been modified, .uno:Save triggers
-	// saveToServer -> collabSaveToServer -> collabUploadFile, and
-	// the _switchToServerAfterSave flag causes switchToServerMode
+	// Save any local-edit changes and then switch to server mode.
+	// If the document has been modified, .uno:Save triggers the
+	// per-platform upload path (collabSaveToServer for COWASM, the
+	// commandresult-driven collabUploadFile in main.js for CODA-Q),
+	// and the _switchToServerAfterSave flag causes switchToServerMode
 	// to be called after the upload completes.  If there are no
 	// modifications, .uno:Save is a no-op and we switch immediately.
 	_saveAndSwitchToServerMode: function () {
 		if (this._permission === 'edit' && this._everModified) {
-			if (window.mode.isCODesktop()) {
-				// CODA-Q: save locally first, then the Bridge
-				// handles upload and switch.
-				window._codaUploadAndSwitchAfterSave = true;
-				this.save(true /* dontTerminateEdit */,
-					false /* dontSaveIfUnmodified */);
-			} else {
-				window._switchToServerAfterSave = true;
-				this.save(true /* dontTerminateEdit */,
-					false /* dontSaveIfUnmodified */);
-			}
+			window._switchToServerAfterSave = true;
+			this.save(true /* dontTerminateEdit */,
+				false /* dontSaveIfUnmodified */);
 		} else {
 			window.collabSendMessage({type: 'saved_and_switching'});
 			window.switchToServerMode();

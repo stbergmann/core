@@ -2217,12 +2217,16 @@ function showWelcomeSVG() {
 
 		global.socket.binaryType = 'arraybuffer';
 
-		if (global.ThisIsAMobileApp && !global.ThisIsTheEmscriptenApp && !window.starterScreen) {
+		if (global.ThisIsAMobileApp && !global.ThisIsTheEmscriptenApp && !window.starterScreen && global.docURL) {
 			// This corresponds to the initial GET request when creating a WebSocket
 			// connection and tells the app's code that it is OK to start invoking
 			// TheFakeWebSocket's onmessage handler. The app code that handles this
 			// special message knows the document to be edited anyway, and can send it
 			// on as necessary to the Online code.
+			// docURL gate: for CODA-Q remote docs we don't yet have a local file
+			// path here - the bootstrap in main.js fetches the doc via
+			// /co/collab, asks Bridge::writeRemoteDocFile to materialise it,
+			// and only then fires HULLO + this.socket.onopen() itself.
 			global.postMobileMessage('HULLO');
 			// A FakeWebSocket is immediately open.
 			this.socket.onopen();
@@ -2231,12 +2235,30 @@ function showWelcomeSVG() {
 
 	// Fetch file using the /co/collab WebSocket endpoint.
 	// Returns a Promise that resolves to the download URL.
-	// Used by WASM builds to download documents via the collab endpoint.
-	global.collabFetchFile = function(wopiSrc, accessToken) {
+	// Used by WASM and CODA builds to download documents via the
+	// collab endpoint.  @coolServer is the http(s):// origin of the
+	// cool server when the page itself lives elsewhere (CODA loads
+	// cool.html from a local origin or file://); pass empty/null for
+	// COWASM (where the page is hosted on the cool server, so the
+	// /co/collab WS resolves correctly against the page origin).
+	// When set, the resolved fetch_url and upload_url responses are
+	// also rebased onto this origin if the server returns them as
+	// site-absolute paths (e.g. "/co/collab/fetch?token=...").
+	global.collabFetchFile = function(wopiSrc, accessToken, coolServer) {
+		// Stash for collabUploadFile so it can rebase upload_url
+		// against the same cool server.  Cleared on socket close.
+		global._collabCoolServer = coolServer || '';
 		return new Promise(function(resolve, reject) {
-			var wsProtocol = global.location.protocol === 'https:' ? 'wss:' : 'ws:';
-			var wsUrl = wsProtocol + '//' + global.location.host +
-				global.serviceRoot + '/co/collab?WOPISrc=' + encodeURIComponent(wopiSrc);
+			var wsUrl;
+			if (coolServer) {
+				wsUrl = coolServer.replace(/^https?:/, function(s) {
+					return s === 'https:' ? 'wss:' : 'ws:';
+				}) + '/co/collab?WOPISrc=' + encodeURIComponent(wopiSrc);
+			} else {
+				var wsProtocol = global.location.protocol === 'https:' ? 'wss:' : 'ws:';
+				wsUrl = wsProtocol + '//' + global.location.host +
+					global.serviceRoot + '/co/collab?WOPISrc=' + encodeURIComponent(wopiSrc);
+			}
 
 			global.app.console.log('Connecting to collab endpoint: ' + wsUrl);
 
@@ -2278,7 +2300,16 @@ function showWelcomeSVG() {
 					} else if (msg.type === 'fetch_url' && msg.requestId === 'wasm-init') {
 						clearTimeout(timeoutId);
 						if (msg.url) {
-							global.app.console.log('Collab fetch URL: ' + msg.url);
+							var url = msg.url;
+							// CollabSocketHandler returns site-absolute
+							// URLs (e.g. /co/collab/fetch?token=...).
+							// When cool.html is hosted on a different
+							// origin than the cool server, rebase onto
+							// _collabCoolServer so fetch() hits the
+							// right host.
+							if (url.startsWith('/') && global._collabCoolServer)
+								url = global._collabCoolServer + url;
+							global.app.console.log('Collab fetch URL: ' + url);
 							// Switch to notification handler for ongoing messages
 							global.collabWs.onmessage = global._collabNotificationHandler;
 							global.collabWs.onerror = function() {
@@ -2287,8 +2318,9 @@ function showWelcomeSVG() {
 							global.collabWs.onclose = function() {
 								global.app.console.log('Collab notification WebSocket closed');
 								global.collabWs = null;
+								global._collabCoolServer = '';
 							};
-							resolve({url: msg.url, filename: msg.filename});
+							resolve({url: url, filename: msg.filename});
 						} else {
 							global.collabWs.close();
 							reject(new Error('Collab fetch response missing URL'));
@@ -2370,8 +2402,15 @@ function showWelcomeSVG() {
 						reject(new Error('Collab upload response missing URL'));
 						return;
 					}
-					global.app.console.log('Collab upload URL: ' + msg.url);
-					fetch(msg.url, {
+					var url = msg.url;
+					// Site-absolute upload_url from CollabSocketHandler;
+					// rebase if cool.html lives on a different origin
+					// than the cool server (CODA case).  See the parallel
+					// rebase for fetch_url in collabFetchFile above.
+					if (url.startsWith('/') && global._collabCoolServer)
+						url = global._collabCoolServer + url;
+					global.app.console.log('Collab upload URL: ' + url);
+					fetch(url, {
 						method: 'POST',
 						body: fileBytes,
 						headers: { 'Content-Type': 'application/octet-stream' }
@@ -2412,6 +2451,30 @@ function showWelcomeSVG() {
 			var msg = JSON.parse(data);
 		} catch (e) {
 			return;
+		}
+
+		// Rebase the avatar URL the cool server's CollabBroker
+		// emits (CollabBroker.cpp's appendUserJson rewrites WOPI
+		// avatar URLs to a server-hosted /co/collab/avatar?...
+		// proxy, but as a site-absolute path).  Works as-is when
+		// cool.html is hosted on the cool server itself (COWASM),
+		// but for CODA (page on file:// or the embed HTTPS server)
+		// the relative URL would resolve against the page's origin
+		// and 404, so prepend _collabCoolServer when set.  Applies
+		// to every user-bearing message shape the broker emits.
+		var rebaseAvatar = function(user) {
+			if (user && typeof user.avatar === 'string'
+				&& user.avatar.startsWith('/')
+				&& global._collabCoolServer) {
+				user.avatar = global._collabCoolServer + user.avatar;
+			}
+		};
+		if (msg.user) {
+			rebaseAvatar(msg.user);
+		}
+		if (Array.isArray(msg.users)) {
+			for (var u = 0; u < msg.users.length; u++)
+				rebaseAvatar(msg.users[u]);
 		}
 
 		if (msg.type === 'user_list' && Array.isArray(msg.users)) {

@@ -2505,53 +2505,135 @@ function showWelcomeSVG() {
 		}
 	};
 
-	// Switch from WASM to traditional server-based collaborative editing.
-	// Submits a form POST to the server-served cool.html, replicating
-	// the original WOPI loading mechanism used by wasm.html.
+	// Switch from local (WASM or LOKit-via-Bridge) editing to traditional
+	// server-based collaborative editing without reloading cool.html:
+	// tear down the local-edit plumbing, then point app.socket at a real
+	// /cool/ws on the cool server.  Covers both COWASM (page hosted on
+	// the cool server itself) and CODA-Q (page hosted on file:// or the
+	// embed HTTPS server, with the per-document WOPI params published
+	// by main.js's QtApp bootstrap on window._codaRemoteInfo).
 	global.switchToServerMode = function() {
-		// Mute the emscripten message bridge so the WASM
-		// module stops interfering with the new connection.
-		window.postMobileMessage = function() {};
-		window.postMobileCall = function() {};
+		// CODA-Q-only: clear save tracking on the native side before we
+		// mute postMobileMessage below.  saveCompleted() is a direct
+		// QWebChannel slot, so it survives the mute regardless, but
+		// keep it adjacent to the rest of the bridge-side teardown.
+		// Otherwise the deferred-close path can hang on _saveInFlight=
+		// true forever if a save-and-switch fired SAVESTARTED first.
+		if (window.bridge && window.bridge.saveCompleted)
+			window.bridge.saveCompleted();
 
-		// No longer a mobile/WASM app from the browser's
-		// perspective - we're switching to server mode.
-		window.ThisIsAMobileApp = false;
-		window.ThisIsTheEmscriptenApp = false;
-
-		// Close the collab WebSocket if open.
+		// Send bye on the per-document collab WS and close it.  Same
+		// in both flavours: the broker recognises the orderly close
+		// and reclaims itself immediately rather than waiting out its
+		// idle grace period for a reconnect that is not coming.
 		if (global.collabWs) {
-			global.collabWs.close();
+			if (global.collabWs.readyState === WebSocket.OPEN) {
+				try { global.collabWs.send('{"type":"bye"}'); }
+				catch (e) { /* already closed */ }
+			}
+			try { global.collabWs.close(); }
+			catch (e) { /* already closed */ }
 			global.collabWs = null;
 		}
 
-		// Ensure access token is available for the server
-		// session.
-		if (window.accessToken) {
-			global.app.map.options.docParams['access_token'] =
-				window.accessToken;
-			global.app.map.options.docParams['access_token_ttl'] =
-				window.accessTokenTTL || '0';
+		// CODA-Q-only: ask the bridge to drop its FakeSocket-to-in-
+		// process-kit pipe.  postMobileMessage must still be live at
+		// this point; muted below.  In COWASM postMobileMessage routes
+		// to the Emscripten module which has no handler for this
+		// message, so guarding on window.bridge avoids the no-op
+		// round-trip.
+		if (window.bridge)
+			window.postMobileMessage('switchToServerMode');
+
+		// From here on the page acts as a plain browser client.
+		window.postMobileMessage = function() {};
+		window.postMobileCall = function() {};
+		window.ThisIsAMobileApp = false;
+		window.ThisIsTheEmscriptenApp = false;
+		window.ThisIsTheQtApp = false;
+
+		// CODA-only: drop the bridge's FakeWebSocket so
+		// app.socket.connect below can take over cleanly with the
+		// real one.  Skipped in COWASM because wasm/wasmapp.cpp's
+		// send2JS keeps pushing tile/status messages via
+		// MAIN_THREAD_EM_ASM(globalThis.TheFakeWebSocket.onmessage(...))
+		// for a brief window after the swap; nulling it out from JS
+		// would land those calls on null and a stale error: message
+		// caught in flight could fire AlertDialog's
+		// "server encountered..." popup.  Leaving the COWASM
+		// FakeWebSocket alive is harmless: app.socket.connect detaches
+		// the old onerror/onclose handlers, and there's no real
+		// underlying socket to leak.
+		if (window.bridge && window.TheFakeWebSocket) {
+			try { window.TheFakeWebSocket.close(); }
+			catch (e) { /* already closed */ }
+			window.TheFakeWebSocket = null;
 		}
-		global.app.map.options.docParams['permission'] = 'edit';
 
-		// Create a real WebSocket to coolwsd.  Cannot use
-		// createWebSocket() since it checks ThisIsAMobileApp
-		// (which we just cleared) but we want a plain WS.
-		var loc = window.location;
-		var wsScheme = loc.protocol === 'https:' ? 'wss://' : 'ws://';
-		var docUrl = global.app.map.options.doc;
-		var sep = docUrl.includes('?') ? '&' : '?';
-		var params = global.app.map.options.docParams;
-		var paramStr = Object.keys(params).map(function(k) {
-			return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
-		}).join('&');
-		var docUrlWithToken = docUrl + sep + paramStr;
-		var wsURI = wsScheme + loc.host + '/cool/ws?WOPISrc='
-			+ encodeURIComponent(docUrlWithToken) + '&compat=/ws';
-		global.app.console.log('Switching to server mode in-place: '
-			+ wsURI);
+		// Build the /cool/ws URL.  Two flavours depending on whether
+		// cool.html itself lives on the cool server (COWASM) or on a
+		// different origin (CODA-Q: file:// or the embed HTTPS
+		// server).  _codaRemoteInfo, set by main.js's QtApp bootstrap
+		// from Bridge::getRemoteInfo, is the CODA-Q signal.
+		var ri = window._codaRemoteInfo;
+		var wsURI;
+		if (ri) {
+			// CODA-Q: target ri.coolServer with access_token as a
+			// top-level URL parameter (rather than encoded inside
+			// the WOPISrc value), because the cool-server's WOPI-
+			// token cross-origin upgrade bypass keys on
+			// RequestDetails::getParamByName, which only sees top-
+			// level params.  Overwrite map.options.doc, which was
+			// the local temp-file path during local-edit mode, with
+			// the integrator's WOPI URL.
+			global.app.map.options.doc = ri.wopiSrc;
+			global.app.map.options.docParams = {
+				access_token: ri.accessToken,
+				access_token_ttl: '0',
+				permission: 'edit',
+			};
+			global.app.map.options.wopi = true;
+			global.app.map.options.wopiSrc = ri.wopiSrc;
+			window.wopiSrc = ri.wopiSrc;
+			var coolWsScheme = ri.coolServer.startsWith('https:')
+				? 'wss:' : 'ws:';
+			var coolHost = ri.coolServer.replace(/^https?:/, '');
+			wsURI = coolWsScheme + coolHost + '/cool/ws?WOPISrc='
+				+ encodeURIComponent(ri.wopiSrc)
+				+ '&access_token='
+				+ encodeURIComponent(ri.accessToken)
+				+ '&access_token_ttl=0&permission=edit&compat=/ws';
+		} else {
+			// COWASM: cool.html is hosted on the cool server, so a
+			// same-origin upgrade against location.host is fine.
+			// Embed access_token inside the WOPISrc value (the
+			// historical form; same-origin doesn't trigger the
+			// cross-origin bypass that would require top-level
+			// params instead).
+			if (window.accessToken) {
+				global.app.map.options.docParams['access_token'] =
+					window.accessToken;
+				global.app.map.options.docParams['access_token_ttl'] =
+					window.accessTokenTTL || '0';
+			}
+			global.app.map.options.docParams['permission'] = 'edit';
+			var loc = window.location;
+			var pageWsScheme = loc.protocol === 'https:'
+				? 'wss://' : 'ws://';
+			var docUrl = global.app.map.options.doc;
+			var sep = docUrl.includes('?') ? '&' : '?';
+			var paramStr = Object.keys(global.app.map.options.docParams)
+				.map(function(k) {
+					return encodeURIComponent(k) + '='
+						+ encodeURIComponent(
+							global.app.map.options.docParams[k]);
+				}).join('&');
+			wsURI = pageWsScheme + loc.host + '/cool/ws?WOPISrc='
+				+ encodeURIComponent(docUrl + sep + paramStr)
+				+ '&compat=/ws';
+		}
 
+		global.app.console.log('Switching to server mode: ' + wsURI);
 		var ws = new WebSocket(wsURI);
 		global.app.socket.connect(ws);
 	};
